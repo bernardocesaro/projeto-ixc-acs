@@ -1,0 +1,337 @@
+// Modelo do banco do Projeto IXC ACS (Supabase / PostgreSQL)
+//
+// Convenções:
+// - Modelos e campos em inglês (usados no código)
+// - Tabelas e colunas em português/snake_case no banco (@@map / @map),
+//   seguindo os nomes do DER e do CLAUDE.md (provedores, clientes, dispositivos, testes...)
+// - Multi-tenant: toda entidade de negócio carrega provider_id (coluna id_provedor)
+// - Testes e logs são imutáveis: triggers no banco bloqueiam UPDATE/DELETE
+//   (ver prisma/migrations/0001_init/migration.sql)
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  // Conexão via pooler do Supabase (porta 6543) usada pela API em execução
+  url       = env("DATABASE_URL")
+  // Conexão direta (porta 5432) usada pelo Prisma para rodar migrations
+  directUrl = env("DIRECT_URL")
+}
+
+// ---------------------------------------------------------------------------
+// Enums
+// ---------------------------------------------------------------------------
+
+enum ContractStatus {
+  ATIVO
+  SUSPENSO
+  CANCELADO
+
+  @@map("status_contrato")
+}
+
+enum OperatingSystem {
+  ANDROID
+  IOS
+  OUTRO
+
+  @@map("sistema_operacional")
+}
+
+enum TestStatus {
+  SUCESSO // parâmetros dentro do esperado
+  ALERTA // algum parâmetro degradado
+  FALHA // teste concluído com parâmetros críticos
+  ERRO // teste não pôde ser concluído
+
+  @@map("status_teste")
+}
+
+enum TestOrigin {
+  MANUAL // disparado pelo cliente no app
+  REMOTO // disparado pelo operador no dashboard
+
+  @@map("origem_teste")
+}
+
+enum TestType {
+  COMPLETO
+  WIFI
+  LATENCIA
+
+  @@map("tipo_teste")
+}
+
+enum NotificationType {
+  SOLICITACAO_TESTE_REMOTO
+  TESTE_CONCLUIDO
+  PARAMETRO_NORMALIZADO
+  AVISO
+
+  @@map("tipo_notificacao")
+}
+
+enum ReadStatus {
+  NAO_LIDA
+  LIDA
+
+  @@map("status_leitura")
+}
+
+enum ReportType {
+  TESTES
+  CLIENTE
+  INCIDENTE
+
+  @@map("tipo_relatorio")
+}
+
+enum ReportFormat {
+  PDF
+
+  @@map("formato_relatorio")
+}
+
+enum ReportStatus {
+  PROCESSANDO
+  CONCLUIDO
+  ERRO
+
+  @@map("status_relatorio")
+}
+
+enum AccessLevel {
+  ADMIN // gerencia operadores do provedor
+  OPERADOR // visualiza testes, dispara teste remoto, gera relatórios
+  LEITURA // apenas visualiza
+
+  @@map("nivel_acesso")
+}
+
+enum OperatorStatus {
+  ATIVO
+  INATIVO
+
+  @@map("status_operador")
+}
+
+enum AuthorizationStatus {
+  PENDENTE
+  AUTORIZADO
+  RECUSADO
+  EXPIRADO
+
+  @@map("status_autorizacao")
+}
+
+// ---------------------------------------------------------------------------
+// Tabelas
+// ---------------------------------------------------------------------------
+
+// Provedor de internet (tenant). Todos os dados são isolados por provedor.
+model Provider {
+  id        Int      @id @default(autoincrement()) @map("id_provedor")
+  name      String   @map("nome") @db.VarChar(150)
+  cnpj      String   @unique @db.VarChar(14) // apenas dígitos
+  // Faixas de IP (CIDR) da rede do provedor, usadas para validar se o
+  // dispositivo está conectado à rede do provedor antes de aceitar um teste
+  ipRanges  String[] @map("faixas_ip")
+  active    Boolean  @default(true) @map("ativo")
+  createdAt DateTime @default(now()) @map("data_cadastro")
+
+  clients        Client[]
+  devices        Device[]
+  tests          Test[]
+  operators      Operator[]
+  notifications  Notification[]
+  reports        Report[]
+  actionLogs     ActionLog[]
+  authorizations RemoteTestAuthorization[]
+
+  @@map("provedores")
+}
+
+// Cliente de um provedor. Loga no app com o usuário do Wi-Fi do roteador;
+// a senha não é armazenada aqui, é validada junto ao IXC ACS.
+model Client {
+  id                   Int            @id @default(autoincrement()) @map("id_cliente")
+  providerId           Int            @map("id_provedor")
+  ixcCode              String?        @map("codigo_ixc") @db.VarChar(50) // id do cliente no IXC
+  name                 String         @map("nome") @db.VarChar(150)
+  email                String?        @db.VarChar(150)
+  phone                String?        @map("telefone") @db.VarChar(20)
+  wifiUsername         String         @map("usuario_wifi") @db.VarChar(100)
+  contractStatus       ContractStatus @default(ATIVO) @map("status_contrato")
+  termsAccepted        Boolean        @default(false) @map("aceite_termos")
+  termsAcceptedAt      DateTime?      @map("data_aceite_termos")
+  notificationsEnabled Boolean        @default(true) @map("notificacoes_habilitadas")
+  createdAt            DateTime       @default(now()) @map("data_cadastro")
+
+  provider       Provider                  @relation(fields: [providerId], references: [id])
+  devices        Device[]
+  notifications  Notification[]
+  authorizations RemoteTestAuthorization[]
+
+  @@unique([providerId, wifiUsername])
+  @@unique([providerId, ixcCode])
+  @@index([providerId])
+  @@map("clientes")
+}
+
+// Dispositivo do cliente, identificado pelo MAC capturado automaticamente no app
+model Device {
+  id              Int              @id @default(autoincrement()) @map("id_dispositivo")
+  providerId      Int              @map("id_provedor")
+  clientId        Int              @map("id_cliente")
+  macAddress      String           @map("mac_address") @db.VarChar(17) // AA:BB:CC:DD:EE:FF
+  model           String?          @map("modelo") @db.VarChar(100) // ex: "iPhone XR"
+  operatingSystem OperatingSystem? @map("sistema_operacional")
+  osVersion       String?          @map("versao_so") @db.VarChar(30)
+  manufacturer    String?          @map("fabricante") @db.VarChar(100)
+  createdAt       DateTime         @default(now()) @map("data_cadastro")
+
+  provider Provider @relation(fields: [providerId], references: [id])
+  client   Client   @relation(fields: [clientId], references: [id])
+  tests    Test[]
+
+  @@unique([providerId, macAddress])
+  @@index([clientId])
+  @@map("dispositivos")
+}
+
+// Resultado de um teste de rede. IMUTÁVEL após inserção (trigger no banco).
+model Test {
+  id                 Int        @id @default(autoincrement()) @map("id_teste")
+  providerId         Int        @map("id_provedor")
+  deviceId           Int        @map("id_dispositivo")
+  operatorId         Int?       @map("id_operador") // preenchido quando o teste é remoto
+  startedAt          DateTime   @map("data_hora_inicio")
+  finishedAt         DateTime?  @map("data_hora_fim")
+  status             TestStatus
+  origin             TestOrigin @default(MANUAL) @map("origem_teste")
+  type               TestType   @default(COMPLETO) @map("tipo_teste")
+  authorizedByClient Boolean    @default(true) @map("autorizado_cliente")
+  ssid               String?    @db.VarChar(64)
+  signalStrengthDbm  Float?     @map("intensidade_sinal_dbm")
+  frequencyGhz       Float?     @map("frequencia_ghz") // 2.4 ou 5
+  pingLatencyMs      Float?     @map("latencia_ping_ms")
+  jitterMs           Float?     @map("jitter_ms")
+  packetLossPercent  Float?     @map("perda_pacotes_percentual")
+  otherParameters    Json?      @map("outros_parametros")
+  createdAt          DateTime   @default(now()) @map("data_registro")
+
+  provider      Provider                 @relation(fields: [providerId], references: [id])
+  device        Device                   @relation(fields: [deviceId], references: [id])
+  operator      Operator?                @relation(fields: [operatorId], references: [id])
+  notifications Notification[]
+  authorization RemoteTestAuthorization?
+
+  @@index([providerId, startedAt])
+  @@index([deviceId, startedAt])
+  @@index([providerId, status])
+  @@map("testes")
+}
+
+// Operador do provedor que acessa o dashboard web (login com JWT)
+model Operator {
+  id           Int            @id @default(autoincrement()) @map("id_operador")
+  providerId   Int            @map("id_provedor")
+  name         String         @map("nome") @db.VarChar(150)
+  login        String         @unique @db.VarChar(100)
+  passwordHash String         @map("senha_hash") @db.VarChar(255)
+  accessLevel  AccessLevel    @default(OPERADOR) @map("nivel_acesso")
+  status       OperatorStatus @default(ATIVO)
+  lastAccessAt DateTime?      @map("ultimo_acesso")
+  createdAt    DateTime       @default(now()) @map("data_cadastro")
+
+  provider       Provider                  @relation(fields: [providerId], references: [id])
+  tests          Test[]
+  reports        Report[]
+  actionLogs     ActionLog[]
+  authorizations RemoteTestAuthorization[]
+
+  @@index([providerId])
+  @@map("operadores")
+}
+
+// Notificação enviada ao cliente no app (ex: pedido de teste remoto)
+model Notification {
+  id         Int              @id @default(autoincrement()) @map("id_notificacao")
+  providerId Int              @map("id_provedor")
+  clientId   Int              @map("id_cliente")
+  testId     Int?             @map("id_teste")
+  message    String           @map("mensagem") // linguagem simples, não técnica
+  type       NotificationType @map("tipo")
+  readStatus ReadStatus       @default(NAO_LIDA) @map("status_leitura")
+  sentAt     DateTime         @default(now()) @map("data_envio")
+
+  provider Provider @relation(fields: [providerId], references: [id])
+  client   Client   @relation(fields: [clientId], references: [id])
+  test     Test?    @relation(fields: [testId], references: [id])
+
+  @@index([clientId, sentAt])
+  @@map("notificacoes")
+}
+
+// Relatório PDF gerado por um operador. Um relatório cobre vários testes,
+// por isso guarda os filtros aplicados em vez de apontar para um único teste.
+model Report {
+  id             Int          @id @default(autoincrement()) @map("id_relatorio")
+  providerId     Int          @map("id_provedor")
+  operatorId     Int          @map("id_operador")
+  generatedAt    DateTime     @default(now()) @map("data_geracao")
+  type           ReportType   @default(TESTES) @map("tipo_relatorio")
+  format         ReportFormat @default(PDF) @map("formato")
+  status         ReportStatus @default(PROCESSANDO)
+  appliedFilters Json?        @map("filtros_aplicados")
+
+  provider Provider @relation(fields: [providerId], references: [id])
+  operator Operator @relation(fields: [operatorId], references: [id])
+
+  @@index([providerId, generatedAt])
+  @@map("relatorios")
+}
+
+// Log de todas as ações do operador. IMUTÁVEL após inserção (trigger no banco).
+model ActionLog {
+  id               Int      @id @default(autoincrement()) @map("id_log")
+  providerId       Int      @map("id_provedor")
+  operatorId       Int      @map("id_operador")
+  action           String   @map("acao") @db.VarChar(100) // ex: "DISPARO_TESTE_REMOTO"
+  affectedEntity   String?  @map("entidade_afetada") @db.VarChar(50) // ex: "testes"
+  affectedEntityId Int?     @map("id_entidade_afetada")
+  details          Json?    @map("detalhes")
+  createdAt        DateTime @default(now()) @map("data_hora")
+  sourceIp         String?  @map("ip_origem") @db.VarChar(45) // IPv4 ou IPv6
+
+  provider Provider @relation(fields: [providerId], references: [id])
+  operator Operator @relation(fields: [operatorId], references: [id])
+
+  @@index([providerId, createdAt])
+  @@index([operatorId])
+  @@map("logs_acoes")
+}
+
+// Pedido de teste remoto: o operador solicita, o cliente autoriza ou recusa.
+// Quando autorizado e executado, test_id aponta para o teste gerado.
+model RemoteTestAuthorization {
+  id          Int                 @id @default(autoincrement()) @map("id_autorizacao")
+  providerId  Int                 @map("id_provedor")
+  clientId    Int                 @map("id_cliente")
+  operatorId  Int                 @map("id_operador")
+  testId      Int?                @unique @map("id_teste")
+  status      AuthorizationStatus @default(PENDENTE)
+  requestedAt DateTime            @default(now()) @map("data_solicitacao")
+  respondedAt DateTime?           @map("data_resposta")
+
+  provider Provider @relation(fields: [providerId], references: [id])
+  client   Client   @relation(fields: [clientId], references: [id])
+  operator Operator @relation(fields: [operatorId], references: [id])
+  test     Test?    @relation(fields: [testId], references: [id])
+
+  @@index([providerId, status])
+  @@index([clientId])
+  @@map("autorizacoes_teste_remoto")
+}
