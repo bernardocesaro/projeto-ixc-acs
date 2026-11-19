@@ -17,7 +17,8 @@ Branch: `feature/backend`
 - **Node.js** + **Express**
 - **Prisma** (ORM — schema, migrations, queries)
 - **Supabase** (PostgreSQL gerenciado — painel em supabase.com)
-- **JWT** (autenticação dos operadores e do app mobile)
+- **Firebase Auth** (login dos operadores do dashboard; o backend valida o ID token com `firebase-admin` e liga ao operador por `firebase_uid`)
+- **JWT** (autenticação do app mobile)
 - **Socket.io** (eventos em tempo real para o frontend web)
 - **PDFKit** (geração de relatórios PDF)
 - **dotenv** (variáveis de ambiente)
@@ -32,7 +33,8 @@ projeto-ixc-acs/
 │   └── schema.prisma        ← modelo do banco
 ├── src/
 │   ├── controllers/         ← lógica de cada recurso
-│   ├── middlewares/         ← auth JWT, validações
+│   ├── config/              ← inicialização do Firebase Admin
+│   ├── middlewares/         ← auth (token Firebase), validações
 │   ├── routes/              ← definição das rotas Express
 │   └── server.js            ← entry point
 ├── .env                     ← NÃO versionar

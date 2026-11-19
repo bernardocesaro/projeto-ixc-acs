@@ -234,13 +234,14 @@ model Test {
   @@map("testes")
 }
 
-// Operador do provedor que acessa o dashboard web (login com JWT)
+// Operador do provedor que acessa o dashboard web (login com Firebase Auth)
 model Operator {
   id           Int            @id @default(autoincrement()) @map("id_operador")
   providerId   Int            @map("id_provedor")
   name         String         @map("nome") @db.VarChar(150)
-  login        String         @unique @db.VarChar(100)
-  passwordHash String         @map("senha_hash") @db.VarChar(255)
+  login        String         @unique @db.VarChar(100) // e-mail usado no Firebase
+  firebaseUid  String         @unique @map("firebase_uid") @db.VarChar(128) // uid do usuário no Firebase Auth
+  passwordHash String?        @map("senha_hash") @db.VarChar(255) // legado: a senha fica no Firebase
   accessLevel  AccessLevel    @default(OPERADOR) @map("nivel_acesso")
   status       OperatorStatus @default(ATIVO)
   lastAccessAt DateTime?      @map("ultimo_acesso")
